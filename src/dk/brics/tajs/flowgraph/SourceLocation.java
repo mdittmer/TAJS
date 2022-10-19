@@ -362,6 +362,27 @@ public class SourceLocation implements DeepImmutable, Serializable {
         }
     }
 
+    /**
+     * Creates SourceLocations for synthetic locations that are associated with a source URL.
+     */
+    public static class SyntheticLoaderLocationMaker extends SourceLocationMaker {
+
+        private final URL location;
+
+        public SyntheticLoaderLocationMaker(URL location) {
+            this.location = location;
+        }
+
+        @Override
+        public SourceLocation make(int lineNumber, int columnNumber, int endLineNumber, int endColumnNumber) {
+            assert (lineNumber == 0);
+            assert (columnNumber == 0);
+            assert (endLineNumber == 0);
+            assert (endColumnNumber == 0);
+            return makeCanonical("synthetic-loader", location, lineNumber, columnNumber, endLineNumber, endColumnNumber, null, Kind.SYNTHETIC);
+        }
+    }
+
     public static class Comparator implements java.util.Comparator<SourceLocation> {
 
         /**

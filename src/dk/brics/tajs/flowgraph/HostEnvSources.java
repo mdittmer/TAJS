@@ -117,11 +117,16 @@ public class HostEnvSources {
     }
 
     public static URL resolve(String path) {
-        String root = "/hostenv";
-        String fullSourcePath = root + "/" + path;
-        URL resource = HostEnvSources.class.getResource(fullSourcePath);
+        // Some build environments unsafely put resources in jar root, whereas
+        // others put them in the `/resources` directory.
+        String unsafeSourcePath = "/hostenv/" + path;
+        String safeSourcePath = "/resources/hostenv/" + path;
+        URL resource = HostEnvSources.class.getResource(unsafeSourcePath);
         if (resource == null) {
-            throw new AnalysisException("Can't find resource " + fullSourcePath);
+            resource = HostEnvSources.class.getResource(safeSourcePath);
+            if (resource == null) {
+                throw new AnalysisException("Can't find resource at " + unsafeSourcePath + " or " + safeSourcePath);
+            }
         }
         return resource;
     }

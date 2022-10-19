@@ -150,7 +150,7 @@ public class Function implements Serializable {
      * Sets the function index.
      * Called when the function is added to a flow graph.
      */
-    void setIndex(int index) {
+    public void setIndex(int index) {
         if (this.index != -1 && !Options.get().isUnevalizerEnabled())
             throw new IllegalArgumentException("Function already belongs to a flow graph: " + getSourceLocation());
         this.index = index;

@@ -100,7 +100,7 @@ public class OptionValues {
 
     private UnsoundnessOptionValues unsoundness = new UnsoundnessOptionValues(null, null);
 
-    @Option(name = "-flowgraph", usage = "Output flowgraph.dot")
+    @Option(name = "-flowgraph", usage = "Output flowgraphs")
     private boolean flowgraph;
 
     @Option(name = "-callgraph", usage = "Output callgraph.dot")
@@ -264,6 +264,9 @@ public class OptionValues {
     @Option(name = "-babel", usage = "Enable Babel preprocessing for source files")
     private boolean babel;
 
+    @Option(name = "-src-dir", usage = "Flowgraph-only mode only: Preprocess all JavaScript files in this directory, rather than preprocessing only the test file listed as the last argument; expects exactly one argument which is interpreted as program entry point and should probably be inside this directory")
+    private String srcDir;
+
     @Option(name = "-type-checks", usage = "Enable type checking (currently only used with ReaGenT)")
     private boolean typeCheckEnabled;
 
@@ -287,6 +290,9 @@ public class OptionValues {
 
     @Option(name = "-no-error-capture-stack-trace-polyfill", usage = "Disable the use of Error.captureStackTrace polyfill")
     private boolean noErrorCaptureStackTracePolyfill;
+
+    @Option(name = "-out", usage = "Specify a custom output directory")
+    private String outDir;
 
     @Argument
     private List<Path> arguments = new ArrayList<>();
@@ -366,11 +372,13 @@ public class OptionValues {
         if (doNotExpectOrdinaryExit != that.doNotExpectOrdinaryExit) return false;
         if (inspector != that.inspector) return false;
         if (babel != that.babel) return false;
+        if (srcDir != that.srcDir) return false;
         if (noPropNamePartitioning != that.noPropNamePartitioning) return false;
         if (noTypePartitioning != that.noTypePartitioning) return false;
         if (noFreeVariablePartitioning != that.noFreeVariablePartitioning) return false;
         if (noStringReplacePolyfill != that.noStringReplacePolyfill) return false;
         if (noErrorCaptureStackTracePolyfill != that.noErrorCaptureStackTracePolyfill) return false;
+        if (outDir != that.outDir) return false;
         if (!Objects.equals(unsoundnessString, that.unsoundnessString)) return false;
         if (!Objects.equals(unsoundness, that.unsoundness)) return false;
         if (!Objects.equals(ignoredLibrariesString, that.ignoredLibrariesString)) return false;
@@ -451,6 +459,7 @@ public class OptionValues {
         result = 31 * result + (doNotExpectOrdinaryExit ? 1 : 0);
         result = 31 * result + (inspector ? 1 : 0);
         result = 31 * result + (babel ? 1 : 0);
+        result = 31 * result + (srcDir != null ? srcDir.hashCode() : 0);
         result = 31 * result + (arguments != null ? arguments.hashCode() : 0);
         result = 31 * result + (soundnessTesterOptions != null ? soundnessTesterOptions.hashCode() : 0);
         result = 31 * result + (typeCheckEnabled ? 1 : 0);
@@ -461,6 +470,7 @@ public class OptionValues {
         result = 31 * result + (noFiltering ? 1 : 0);
         result = 31 * result + (noStringReplacePolyfill ? 1 : 0);
         result = 31 * result + (noErrorCaptureStackTracePolyfill ? 1 : 0);
+        result = 31 * result + (outDir != null ? outDir.hashCode() : 0);
         return result;
     }
 
@@ -1109,9 +1119,20 @@ public class OptionValues {
         return noConcreteNative;
     }
 
+    public String getOutDir() {
+        return outDir;
+    }
+
+    public void setOutDir(String newOutDir) {
+        outDir = newOutDir;
+    }
+
     public void checkConsistency() throws CmdLineException {
         if (arguments == null || arguments.isEmpty()) {
             throw new CmdLineException(null, "No arguments provided!", null);
+        }
+        if (srcDir != null && arguments.size() != 1) {
+            throw new CmdLineException(null, "-src-dir implies exactly one argument: path to program entry point file", null);
         }
         if (generateLog) {
             if (logFile == null) {
@@ -1336,6 +1357,10 @@ public class OptionValues {
 
     public void disableBabel() {
         babel = false;
+    }
+
+    public String getSrcDir() {
+        return srcDir;
     }
 
     public boolean isTypeCheckEnabled() {

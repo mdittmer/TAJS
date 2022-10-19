@@ -1,5 +1,6 @@
 /*
  * Copyright 2009-2020 Aarhus University
+ * Copyright 2022 University of Waterloo
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +17,6 @@
 
 package dk.brics.tajs;
 
-import ca.uwaterloo.tajs.FlowAnalyzer;
 import dk.brics.tajs.analysis.Analysis;
 import dk.brics.tajs.analysis.InitialStateBuilder;
 import dk.brics.tajs.analysis.Transfer;
@@ -53,6 +53,8 @@ import dk.brics.tajs.options.OptionValues;
 import dk.brics.tajs.options.Options;
 import dk.brics.tajs.options.TAJSEnvironmentConfig;
 import dk.brics.tajs.preprocessing.Babel;
+import dk.brics.tajs.preprocessing.BabelDir;
+import dk.brics.tajs.preprocessing.SrcDir;
 import dk.brics.tajs.solver.SolverSynchronizer;
 import dk.brics.tajs.typetesting.ITypeTester;
 import dk.brics.tajs.util.AnalysisException;
@@ -66,10 +68,12 @@ import dk.brics.tajs.util.Strings;
 import net.htmlparser.jericho.Source;
 import org.apache.log4j.Logger;
 import org.apache.log4j.PropertyConfigurator;
+import org.apache.log4j.Level;
 import org.kohsuke.args4j.CmdLineException;
 
 import ca.uwaterloo.tajs.souffle.DatalogGenerator;
 
+import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
@@ -78,6 +82,8 @@ import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
@@ -87,13 +93,18 @@ import static dk.brics.tajs.util.Collections.newList;
 import static dk.brics.tajs.util.Collections.newSet;
 
 /**
- * Main class for the TAJS program analysis.
+ * Main class for the TAJS flowgraph output only.
  */
-public class Main {
+public class FlowGraphOnlyMain {
 
-    private static Logger log = Logger.getLogger(Main.class);
+    private static Logger log = Logger.getLogger(FlowGraphOnlyMain.class);
 
-    private Main() {
+    // TODO: Determine how files are (re)named by babel when they have
+    // ECMAScript > 3 -implying extensions and make sure not source files get
+    // skipped.
+    private static final Set<String> jsFileExensions = newSet(Arrays.asList(".js"));
+
+    private FlowGraphOnlyMain() {
     }
 
     /**
@@ -104,13 +115,10 @@ public class Main {
     public static void main(String[] args) {
         try {
             initLogging();
-            Analysis a = init(args, null);
-            if (a == null)
+            InitResult initResult = init(args);
+            if (initResult.getFlowGraphs() == null)
                 System.exit(-1);
-            run(a);
-
-            runFlowAnalyzer(a);
-
+            run(initResult);
             System.exit(0);
         } catch (AnalysisException e) {
             if (Options.get().isDebugOrTestEnabled()) {
@@ -145,149 +153,142 @@ public class Main {
     /**
      * Reads the input and prepares an analysis object, using the default monitoring.
      */
-    public static Analysis init(String[] args, SolverSynchronizer sync, Transfer transfer) throws AnalysisException {
-        OptionValues options = new OptionValues();
+    public static InitResult init(String[] args) throws AnalysisException {
         try {
+            OptionValues options = new OptionValues();
             options.parse(args);
+
+            options.enableFlowgraph();
+            if (options.getOutDir() == null) {
+                options.setOutDir("out");
+            }
+
             options.checkConsistency();
-            return init(options, null, sync, transfer, null);
+
+            // Special case: interpret `-babel` option as "babel dir mode" where
+            // one argument is expected: a directory that babel will use to
+            // determine source files.
+            if (options.isBabelEnabled() && options.getArguments().size() != 1) {
+                throw new CmdLineException(null, "In flowgraph-only mode the -babel option changes how arguments are interpreted.\nSpecifying -babel implies exactly two", null);
+            }
+            Options.set(options);
+
         } catch (CmdLineException e) {
             showHeader();
             log.info(e.getMessage() + "\n");
-            log.info("Usage: java -jar tajs-all.jar [OPTION]... [FILE]...\n");
+            log.info("Usage: CLASSPATH=...  java dk.brics.tajs.FlowGraphOnlyMain [OPTION]... [FILE]...\n");
             Options.showUsage();
             return null;
         }
-    }
 
-    /**
-     * Reads the input and prepares an analysis object.
-     *
-     * @return analysis object, null if invalid input
-     * @throws AnalysisException if internal error
-     */
-    public static Analysis init(OptionValues options, IAnalysisMonitoring monitoring, SolverSynchronizer sync, Transfer transfer, ITypeTester<Context> ttr) throws AnalysisException {
-        checkValidOptions(options);
-        Options.set(options);
+        try {
+            Files.walk(Paths.get(Options.get().getOutDir()))
+                .sorted(Comparator.reverseOrder())
+                .map(Path::toFile)
+                .forEach(File::delete);
+        } catch (IOException e) {
+            log.warn("Error deleting out directory: " + e);
+        }
+
         TAJSEnvironmentConfig.init();
-
-        if (monitoring == null)
-            monitoring = new AnalysisMonitor();
-        monitoring = addOptionalMonitors(monitoring);
 
         showHeader();
 
+        Path inDir = null;
         if (Options.get().getSoundnessTesterOptions().isGenerateOnlyIncludeAutomatically()
                 || Options.get().getSoundnessTesterOptions().isGenerateOnlyIncludeAutomaticallyForHTMLFiles()
-                || Options.get().isBabelEnabled()) {
-            preprocess(monitoring);
+                || Options.get().isBabelEnabled() || Options.get().getSrcDir() != null) {
+            inDir = preprocess();
+        } else {
+            inDir = PathAndURLUtils.getCommonAncestorDirectory(getRelevantFiles());
         }
 
-        Analysis analysis = new Analysis(monitoring, sync, transfer, ttr);
-
-        if (Options.get().isDebugEnabled())
-            Options.dump();
-
-        enterPhase(AnalysisPhase.INITIALIZATION, analysis.getMonitoring());
-        Source document = null;
-        FlowGraph fg;
+        enterPhase(AnalysisPhase.INITIALIZATION);
+        List<FlowGraph> flowGraphs = newList();
         try {
             // split into JS files and HTML files
             URL htmlFile = null;
-            List<URL> js_files = newList();
+            List<URL> jsFiles = newList();
             List<URL> resolvedFiles = resolveInputs(Options.get().getArguments());
             for (URL fn : resolvedFiles) {
                 if (isHTMLFileName(fn.toString())) {
                     if (htmlFile != null)
                         throw new AnalysisException("Only one HTML file can be analyzed at a time");
                     htmlFile = fn;
-                } else
-                    js_files.add(fn);
+                } else if (jsFileExensions.contains(PathAndURLUtils.getFileExtension(Path.of(fn.getPath())))) {
+                    jsFiles.add(fn);
+                }
             }
 
-            FlowGraphBuilder builder = FlowGraphBuilder.makeForMain(new SourceLocation.StaticLocationMaker(Lists.getLast(resolvedFiles)));
-            builder.addLoadersForHostFunctionSources(HostEnvSources.getAccordingToOptions());
             if (Options.get().isNodeJS()) {
                 NodeJSRequire.init();
                 if (resolvedFiles.size() != 1 || htmlFile != null) {
                     throw new AnalysisException("A single JavaScript file is expected for NodeJS analysis");
                 }
                 // noop, the bootstrapping has been done by addLoadersForHostFunctionSources above
-            }
-            else if (!js_files.isEmpty()) {
+            } else if (!jsFiles.isEmpty()) {
                 if (htmlFile != null)
                     throw new AnalysisException("Cannot analyze an HTML file and JavaScript files at the same time");
-                // build flowgraph for JS files
-                for (URL js_file : js_files) {
+                // build flowgraphs for JS files
+                for (URL jsFile : jsFiles) {
                     if (!Options.get().isQuietEnabled())
-                        log.info("Loading " + js_file);
-                    builder.transformStandAloneCode(Loader.getString(js_file, Charset.forName("UTF-8")), new SourceLocation.StaticLocationMaker(js_file));
+                        log.info("Loading " + jsFile);
+                    FlowGraphBuilder builder = getNextFlowGraphBuilder(jsFile, flowGraphs);
+                    builder.transformStandAloneCode(Loader.getString(jsFile, Charset.forName("UTF-8")), new SourceLocation.StaticLocationMaker(jsFile));
+                    flowGraphs.add(builder.close());
                 }
             } else {
                 // build flowgraph for JavaScript code in or referenced from HTML file
+                FlowGraphBuilder builder = getNextFlowGraphBuilder(Lists.getLast(resolvedFiles), null);
                 Options.get().enableIncludeDom(); // always enable DOM if any HTML files are involved
                 if (!Options.get().isQuietEnabled())
                     log.info("Loading " + htmlFile);
                 HTMLParser p = new HTMLParser(htmlFile);
-                document = p.getHTML();
                 for (Pair<URL, JavaScriptSource> js : p.getJavaScript()) {
                     if (!Options.get().isQuietEnabled() && js.getSecond().getKind() == Kind.FILE)
                         log.info("Loading " + PathAndURLUtils.getRelativeToWorkingDirectory(PathAndURLUtils.toPath(js.getFirst(), false)));
                     builder.transformWebAppCode(js.getSecond(), new SourceLocation.StaticLocationMaker(js.getFirst()));
                 }
+                flowGraphs.add(builder.close());
             }
-            fg = builder.close();
+
         } catch (IOException e) {
             log.error("Error: Unable to load and parse " + e.getMessage());
             return null;
         }
-        if (sync != null)
-            sync.setFlowGraph(fg);
-        if (Options.get().isFlowGraphEnabled())
-            dumpFlowGraph(fg, false);
 
-        analysis.getSolver().init(fg, document);
+        leavePhase(AnalysisPhase.INITIALIZATION);
 
-        leavePhase(AnalysisPhase.INITIALIZATION, analysis.getMonitoring());
-
-        return analysis;
+        return new InitResult(inDir, flowGraphs);
     }
 
-    /**
-     * Reads the input and prepares an analysis object, using the default monitoring and transfer functions.
-     */
-    public static Analysis init(String[] args, SolverSynchronizer sync) throws AnalysisException {
-        return init(args, sync, new Transfer());
-    }
-
-    /**
-     * Reads the input and prepares an analysis object, using the default transfer functions.
-     */
-    public static Analysis init(OptionValues options, IAnalysisMonitoring monitoring, SolverSynchronizer sync) throws AnalysisException {
-        return init(options, monitoring, sync, new Transfer(), null);
-    }
-
-    private static void checkValidOptions(OptionValues options) {
-        try {
-            options.checkConsistency();
-        } catch (CmdLineException e) {
-            throw new AnalysisException(e);
+    private static FlowGraphBuilder getNextFlowGraphBuilder(URL url, List<FlowGraph> flowGraphs) {
+        int nextFunctionId = 0;
+        int nextBlockId = 0;
+        int nextNodeId = 0;
+        for (FlowGraph flowGraph : flowGraphs) {
+            flowGraph.getNumberOfFunctions();
+            nextFunctionId += flowGraph.getNumberOfFunctions();
+            nextBlockId += flowGraph.getNumberOfBlocks();
+            nextNodeId += flowGraph.getNumberOfNodes();
         }
+        FlowGraphBuilder builder = FlowGraphBuilder.makeForMainWithFirstFunctionId(new SourceLocation.StaticLocationMaker(url), nextFunctionId, nextBlockId, nextNodeId);
+        builder.addLoadersForHostFunctionSources(HostEnvSources.getAccordingToOptions());
+        return builder;
     }
+
+    /**
+     * TODO: implement checkValidOptions() for flowgraph-only mode.
+     */
 
     /**
      * If the main file is a .html file, then set onlyInclude for instrumentation to
      * be the main file as well as all script files used by the main file.
      * Also performs Babel preprocessing.
      */
-    private static void preprocess(IAnalysisMonitoring monitoring) {
-        Set<Path> relevantFiles = newSet();
+    private static Path preprocess() throws AnalysisException {
+        Set<Path> relevantFiles = getRelevantFiles();
         Path testFile = Lists.getLast(Options.get().getArguments());
-        relevantFiles.add(testFile);
-        if (Options.get().getSoundnessTesterOptions().isGenerateOnlyIncludeAutomaticallyForHTMLFiles() && (testFile.toString().endsWith(".html") || testFile.toString().endsWith(".htm"))) {
-            relevantFiles.addAll(HTMLParser.getScriptsInHTMLFile(PathAndURLUtils.toRealPath(testFile)));
-        }
-        relevantFiles = relevantFiles.stream().map(PathAndURLUtils::toRealPath).collect(Collectors.toSet());
         Path commonAncestor = PathAndURLUtils.getCommonAncestorDirectory(relevantFiles);
         Path rootDirFromMainDirectory = PathAndURLUtils.toRealPath(testFile).getParent().relativize(commonAncestor);
         if (Options.get().getSoundnessTesterOptions().isGenerateOnlyIncludeAutomatically()
@@ -295,57 +296,42 @@ public class Main {
             Options.get().getSoundnessTesterOptions().setOnlyIncludesForInstrumentation(Optional.of(relevantFiles));
             Options.get().getSoundnessTesterOptions().setRootDirFromMainDirectory(rootDirFromMainDirectory);
         }
-        if (Options.get().isBabelEnabled()) {
-            enterPhase(AnalysisPhase.PREPROCESSING, monitoring);
-            Babel.translate(commonAncestor, relevantFiles);
-            leavePhase(AnalysisPhase.PREPROCESSING, monitoring);
+
+        String srcDir = Options.get().getSrcDir();
+        Path inDir = srcDir != null ? Paths.get(srcDir) : commonAncestor;
+        boolean isBabelEnabled = Options.get().isBabelEnabled();
+        if (isBabelEnabled || srcDir != null) {
+            enterPhase(AnalysisPhase.PREPROCESSING);
+            if (isBabelEnabled) {
+                if (srcDir != null) {
+                    inDir = BabelDir.translate(inDir);
+                } else {
+                    inDir = Babel.translate(inDir, relevantFiles);
+                }
+            } else {
+                try {
+                    inDir = SrcDir.translate(inDir);
+                } catch (IOException e) {
+                    throw new AnalysisException("Failed to translate source: " + e);
+                }
+            }
+            leavePhase(AnalysisPhase.PREPROCESSING);
         }
+        return inDir;
     }
 
-    /**
-     * Adds additional monitors according to the options.
-     */
-    private static IAnalysisMonitoring addOptionalMonitors(IAnalysisMonitoring monitoring) {
-        List<IAnalysisMonitoring> extraMonitors = newList();
-
-        // Progress monitor
-        if (log.isDebugEnabled() || (!log.isDebugEnabled() && log.isInfoEnabled() && !Options.get().isQuietEnabled() && !Options.get().isTestEnabled() && !Options.get().isIntermediateStatesEnabled()))
-            extraMonitors.add(new ProgressMonitor(true));
-
-        // Analysis timeout monitor
-        int timeLimit = Options.get().getAnalysisTimeLimit();
-        int transferLimit = Options.get().getAnalysisTransferLimit();
-        AnalysisTimeLimiter timeLimiter = new AnalysisTimeLimiter(timeLimit, transferLimit);
-        extraMonitors.add(timeLimiter);
-
-        // Analysis result measuring monitors
-        if (Options.get().isMemoryMeasurementEnabled()) {
-            if (Options.get().isStatisticsEnabled()) {
-                extraMonitors.add(new MemoryUsageDiagnosisMonitor());
+    private static Set<Path> getRelevantFiles() {
+        Set<Path> relevantFiles = newSet();
+        Path testFile = Lists.getLast(Options.get().getArguments());
+        if (Options.get().getSoundnessTesterOptions().isGenerateOnlyIncludeAutomaticallyForHTMLFiles() && (testFile.toString().endsWith(".html") || testFile.toString().endsWith(".htm"))) {
+            relevantFiles.add(testFile);
+            relevantFiles.addAll(HTMLParser.getScriptsInHTMLFile(PathAndURLUtils.toRealPath(testFile)));
+        } else {
+            for (Path file : Options.get().getArguments()) {
+                relevantFiles.add(file);
             }
-            extraMonitors.add(new MaxMemoryUsageMonitor());
         }
-
-        // Analysis results checking monitors
-        // Note: the first one to throw an exception will prevent the others from reporting errors
-        if (Options.get().getSoundnessTesterOptions().isTest()) {
-            extraMonitors.add(new SoundnessTesterMonitor());
-        } else if (Options.get().isTestEnabled()) {
-            // (no need to test reachability if using soundness testing)
-            extraMonitors.add(new ProgramExitReachabilityChecker(true, !Options.get().isDoNotExpectOrdinaryExitEnabled(), true, false, true));
-        }
-        extraMonitors.add(new TAJSAssertionReachabilityCheckerMonitor());
-
-        // put inspector *after* checking
-        if (Options.get().isInspectorEnabled()) {
-            extraMonitors.add(InspectorFactory.createInspectorMonitor());
-        }
-
-        if (!extraMonitors.isEmpty()) {
-            extraMonitors.add(0, monitoring);
-            monitoring = CompositeMonitor.make(extraMonitors);
-        }
-        return monitoring;
+        return relevantFiles.stream().map(PathAndURLUtils::toRealPath).collect(Collectors.toSet());
     }
 
     private static List<URL> resolveInputs(List<Path> files) {
@@ -367,6 +353,11 @@ public class Main {
         prop.put("log4j.appender.tajs.layout", "org.apache.log4j.PatternLayout");
         prop.put("log4j.appender.tajs.layout.ConversionPattern", "%m%n");
         PropertyConfigurator.configure(prop);
+
+        // Manually set log level for less verbose output.
+        log.setLevel(Level.WARN);
+        Logger dgLogger = Logger.getLogger(DatalogGenerator.class);
+        dgLogger.setLevel(Level.WARN);
     }
 
     /**
@@ -374,77 +365,56 @@ public class Main {
      *
      * @throws AnalysisException if internal error
      */
-    public static void run(Analysis analysis) throws AnalysisException {
-        IAnalysisMonitoring monitoring = analysis.getMonitoring();
+    public static void run(InitResult initResult) throws AnalysisException {
+        Path outDir = Paths.get(Options.get().getOutDir());
+        Path flowGraphsDir = outDir.resolve("flowgraphs");
+        Path factsDir = flowGraphsDir.resolve("facts");
 
-        long time = System.currentTimeMillis();
-
-        enterPhase(AnalysisPhase.ANALYSIS, monitoring);
         try {
-            boolean completed = analysis.getSolver().solve();
-            if (!completed && Options.get().isTestEnabled() && !Options.get().isInspectorEnabled() && !Options.get().isAnalysisLimitationWarnOnly())
-                return; // skip scan phase if not reached fixpoint, unless in test mode (unless inspector enabled or warn-only)
-        } finally {
-            leavePhase(AnalysisPhase.ANALYSIS, monitoring);
-        }
-
-        long elapsed = System.currentTimeMillis() - time;
-        if (Options.get().isTimingEnabled())
-            log.info("Analysis finished in " + elapsed + "ms");
-
-        if (Options.get().isFlowGraphEnabled())
-            dumpFlowGraph(analysis.getSolver().getFlowGraph(), true);
-
-        enterPhase(AnalysisPhase.SCAN, monitoring);
-        analysis.getSolver().scan();
-        leavePhase(AnalysisPhase.SCAN, monitoring);
-    }
-
-    public static void runFlowAnalyzer(Analysis analysis) {
-        FlowAnalyzer analyzer = new FlowAnalyzer(analysis);
-        analyzer.run();
-    }
-
-    /**
-     * Outputs the flowgraph (in graphviz dot files).
-     */
-    private static void dumpFlowGraph(FlowGraph g, boolean end) {
-        try {
-            // create directories
-            String out = Options.get().getOutDir();
-            Path outdir = Paths.get(out != null ? out : "out").resolve("flowgraphs");
-            Files.createDirectories(outdir);
-            // dump the flowgraph to file
-            String fileName = (end ? "final" : "initial") + ".dot";
-            try (PrintWriter pw = new PrintWriter(new FileWriter(outdir.resolve(fileName).toFile()))) {
-                g.toDot(pw);
-            } catch (IOException e) {
-                throw new AnalysisException(e);
-            }
-            // dump each function to file
-            g.toDot(outdir, end);
-            // also print flowgraph
-            log.info(g.toString());
-
-            if (!end) {
-                return;
-            }
-
-            try {
-                DatalogGenerator dg = new DatalogGenerator(outdir.resolve("facts"));
-                dg.visitGraph(g);
-            } catch (IOException e) {
-                throw new AnalysisException(e);
+            Files.createDirectories(outDir);
+            Files.createDirectories(flowGraphsDir);
+            Files.createDirectories(factsDir);
+            DatalogGenerator dg = new DatalogGenerator(factsDir);
+            dg.gatherPackageJson(initResult.getInDir());
+            for (FlowGraph flowGraph : initResult.getFlowGraphs()) {
+                dumpFlowGraph(flowGraph, flowGraphsDir);
+                dg.visitGraph(flowGraph);
             }
         } catch (IOException e) {
             throw new AnalysisException(e);
         }
     }
 
-    private static void enterPhase(AnalysisPhase phase, IAnalysisMonitoring monitoring) {
+    /**
+     * Outputs the flowgraph (in graphviz dot file).
+     */
+    private static void dumpFlowGraph(FlowGraph g, Path flowGraphsDir) {
+        // dump the flowgraph to file
+        Path sourcePath = Paths.get(g.getMain().getSourceLocation().getLocation().getPath());
+        Optional<Path> relativeToTAJS = PathAndURLUtils.getRelativeToTAJS(sourcePath);
+
+        // prefer TAJS-dir-relative name
+        String canonicalSourcePath;
+        if (relativeToTAJS.isPresent()) {
+            canonicalSourcePath = relativeToTAJS.get().toString();
+        } else {
+            log.warn("Using absolute path for source that could not be made relative to TAJS dir");
+            canonicalSourcePath = sourcePath.toString();
+        }
+
+        String baseName = canonicalSourcePath.replace("/", "_");
+        String fileName = baseName + ".dot";
+        try (PrintWriter pw = new PrintWriter(new FileWriter(flowGraphsDir.resolve(fileName).toFile()))) {
+            g.toDot(pw);
+        } catch (IOException e) {
+            throw new AnalysisException(e);
+        }
+        log.info(g.toString());
+    }
+
+    private static void enterPhase(AnalysisPhase phase) {
         String phaseName = prettyPhaseName(phase);
         showPhaseStart(phaseName);
-        monitoring.visitPhasePre(phase);
     }
 
     private static void showHeader() {
@@ -460,8 +430,7 @@ public class Main {
         }
     }
 
-    private static void leavePhase(AnalysisPhase phase, IAnalysisMonitoring monitoring) {
-        monitoring.visitPhasePost(phase);
+    private static void leavePhase(AnalysisPhase phase) {
     }
 
     private static String prettyPhaseName(AnalysisPhase phase) {
@@ -470,10 +439,6 @@ public class Main {
                 return "Preprocessing";
             case INITIALIZATION:
                 return "Loading files";
-            case ANALYSIS:
-                return "Data flow analysis";
-            case SCAN:
-                return "Scan";
             default:
                 throw new RuntimeException("Unhandled phase enum: " + phase);
         }

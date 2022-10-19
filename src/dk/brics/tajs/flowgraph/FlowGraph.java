@@ -42,7 +42,6 @@ import static dk.brics.tajs.util.Collections.newSet;
  * primitive instructions, edges represent control flow.
  */
 public class FlowGraph {
-
     /**
      * The functions in this flow graph.
      */
@@ -98,6 +97,10 @@ public class FlowGraph {
      */
     public FlowGraph(Function main) {
         this.main = main;
+        init();
+    }
+
+    private void init() {
         this.functions = newSet();
         this.rawSyntacticInformation = new RawSyntacticInformation();
         this.hostEnvironmentLocations = newSet();
@@ -143,6 +146,13 @@ public class FlowGraph {
     }
 
     /**
+     * Returns the total number of functions in this flow graph.
+     */
+    public int getNumberOfFunctions() {
+        return number_of_functions;
+    }
+
+    /**
      * Returns the functions, including the main function.
      */
     public Collection<Function> getFunctions() {
@@ -155,8 +165,8 @@ public class FlowGraph {
     public void addFunction(Function f) {
         if (f == null)
             throw new NullPointerException();
+        number_of_functions++;
         functions.add(f);
-        f.setIndex(number_of_functions++);
     }
 
     /**

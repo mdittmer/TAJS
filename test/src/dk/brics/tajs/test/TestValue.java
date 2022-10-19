@@ -120,6 +120,7 @@ public class TestValue {
         fg.addBlock(b);
         f.complete();
         fg.addFunction(f);
+        f.setIndex(0);
         f.setMaxRegister(1000); // Ok for testing purposes
         Value vBottom = Value.makeNone();
         Value vAbsent = Value.makeAbsent();

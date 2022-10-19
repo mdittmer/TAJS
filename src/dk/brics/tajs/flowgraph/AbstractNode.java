@@ -83,6 +83,7 @@ public abstract class AbstractNode implements Cloneable, Serializable {
      * Constructs a new node.
      */
     protected AbstractNode(SourceLocation location) {
+        assert (location != null);
         this.location = location;
         index = -1;
     }

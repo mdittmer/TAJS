@@ -47,7 +47,11 @@ import dk.brics.tajs.util.Strings;
 import org.apache.log4j.Logger;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.List;
 import java.util.Set;
@@ -128,11 +132,19 @@ public class UnevalizerAPI {
         evalCache.setCode(cc, e);
         c.propagateToBasicBlock(state.clone(), e.getEntryBlock(), state.getContext());
         if (Options.get().isFlowGraphEnabled()) {
-            try (PrintWriter pw = new PrintWriter(new File("out" + File.separator + "flowgraphs" + File.separator + "uneval-" +
-                    callNode.getIndex() + "-" + Integer.toHexString(state.getContext().hashCode()) + ".dot"))) {
-                currentFg.toDot(pw);
-                pw.flush();
-            } catch (Exception ee) {
+            String out = Options.get().getOutDir();
+            Path outdir = Paths.get(out != null ? out : "out");
+            try {
+                Files.createDirectories(outdir);
+                Path filename = outdir.resolve("flowgraphs").resolve(
+                    "uneval-" + callNode.getIndex() + "-" + Integer.toHexString(state.getContext().hashCode()) + ".dot");
+                try (PrintWriter pw = new PrintWriter(filename.toFile())) {
+                    currentFg.toDot(pw);
+                    pw.flush();
+                } catch (Exception eee) {
+                    throw new AnalysisException(eee);
+                }
+            } catch (IOException ee) {
                 throw new AnalysisException(ee);
             }
         }
@@ -203,11 +215,19 @@ public class UnevalizerAPI {
         ObjectLabel callbackUnevaled = ObjectLabel.make(e.getEntryFunction());
         evalCache.setCode(cc, e);
         if (Options.get().isFlowGraphEnabled()) {
-            try (PrintWriter pw = new PrintWriter(new File("out" + File.separator + "flowgraphs" + File.separator + "uneval-" +
-                    callNode.getIndex() + "-" + Integer.toHexString(s.getContext().hashCode()) + ".dot"))) {
-                currFg.toDot(pw);
-                pw.flush();
-            } catch (Exception ee) {
+            String out = Options.get().getOutDir();
+            Path outdir = Paths.get(out != null ? out : "out");
+            try {
+                Files.createDirectories(outdir);
+                Path filename = outdir.resolve("flowgraphs").resolve(
+                    "uneval-" + callNode.getIndex() + "-" + Integer.toHexString(s.getContext().hashCode()) + ".dot");
+                try (PrintWriter pw = new PrintWriter(filename.toFile())) {
+                    currFg.toDot(pw);
+                    pw.flush();
+                } catch (Exception eee) {
+                    throw new AnalysisException(eee);
+                }
+            } catch (IOException ee) {
                 throw new AnalysisException(ee);
             }
         }

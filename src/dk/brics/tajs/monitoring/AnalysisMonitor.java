@@ -83,6 +83,9 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.PrintWriter;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.text.NumberFormat;
 import java.util.Collection;
 import java.util.Collections;
@@ -667,16 +670,19 @@ public class AnalysisMonitor implements IAnalysisMonitoring {
 
         if (Options.get().isCallGraphEnabled()) {
             log.info(callgraph.toString());
-            File outdir = new File("out");
-            if (!outdir.exists()) {
-                outdir.mkdir();
-            }
-            String filename = "out" + File.separator + "callgraph.dot";
-            try (FileWriter f = new FileWriter(filename)) {
-                log.info("Writing call graph to " + filename);
-                callgraph.toDot(new PrintWriter(f));
+            String out = Options.get().getOutDir();
+            Path outdir = Paths.get(out != null ? out : "out");
+            try {
+                Files.createDirectories(outdir);
+                Path filename = outdir.resolve("callgraph.dot");
+                try (FileWriter f = new FileWriter(filename.toFile())) {
+                    log.info("Writing call graph to " + filename);
+                    callgraph.toDot(new PrintWriter(f));
+                } catch (IOException e) {
+                    log.error("Unable to write " + filename + ": " + e.getMessage());
+                }
             } catch (IOException e) {
-                log.error("Unable to write " + filename + ": " + e.getMessage());
+                log.error("Failed to create callgraph.dot in " + outdir + ": " + e.getMessage());
             }
         }
     }

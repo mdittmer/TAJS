@@ -31,7 +31,7 @@ import dk.brics.tajs.flowgraph.HostEnvSources;
 import dk.brics.tajs.flowgraph.JavaScriptSource;
 import dk.brics.tajs.flowgraph.SourceLocation;
 import dk.brics.tajs.flowgraph.SourceLocation.SourceLocationMaker;
-import dk.brics.tajs.flowgraph.SourceLocation.SyntheticLocationMaker;
+import dk.brics.tajs.flowgraph.SourceLocation.SyntheticLoaderLocationMaker;
 import dk.brics.tajs.flowgraph.TAJSFunctionName;
 import dk.brics.tajs.flowgraph.ValueLogLocationInformation;
 import dk.brics.tajs.flowgraph.jsnodes.BeginForInNode;
@@ -95,6 +95,12 @@ public class FlowGraphBuilder {
 
     private final AstEnv initialEnv;
 
+    private final int firstFunctionId;
+
+    private final int firstBlockId;
+
+    private final int firstNodeId;
+
     private boolean closed = false;
 
     private TranslationResult processed;
@@ -113,6 +119,30 @@ public class FlowGraphBuilder {
     public FlowGraphBuilder(AstEnv env, FunctionAndBlockManager fab) {
         assert env != null;
         assert fab != null;
+        firstFunctionId = 0;
+        firstBlockId = 0;
+        firstNodeId = 0;
+        functionAndBlocksManager = fab;
+        astInfo = new ASTInfo();
+        initialEnv = env;
+        parser = new JavaScriptParser(mode, strict);
+        processed = TranslationResult.makeAppendBlock(initialEnv.getAppendBlock());
+        syntacticInformation = new RawSyntacticInformation();
+        valueLogMappingInformation = new ValueLogLocationInformation();
+    }
+
+    /**
+     * Constructs a flow graph builder.
+     * @param env traversal environment
+     * @param fab function/block manager
+     * @param ffi first function id
+     */
+    public FlowGraphBuilder(AstEnv env, FunctionAndBlockManager fab, int ffi, int fbi, int fni) {
+        assert env != null;
+        assert fab != null;
+        firstFunctionId = ffi;
+        firstBlockId = fbi;
+        firstNodeId = fni;
         functionAndBlocksManager = fab;
         astInfo = new ASTInfo();
         initialEnv = env;
@@ -262,6 +292,7 @@ public class FlowGraphBuilder {
         }
         flowGraph.addSyntacticInformation(syntacticInformation, valueLogMappingInformation);
 
+        int origFunctionCount = flowGraph.getNumberOfFunctions();
         int origBlockCount = flowGraph.getNumberOfBlocks();
         int origNodeCount = flowGraph.getNumberOfNodes();
 
@@ -273,6 +304,7 @@ public class FlowGraphBuilder {
         Pair<List<Function>, List<BasicBlock>> blocksAndFunctions = functionAndBlocksManager.close();
 
         for (Function f : blocksAndFunctions.getFirst()) {
+            log.info("FlowGraphBuilder adding function  " + f.getSourceLocation().getLocation() + ":" + f.getSourceLocation().getLineNumber() + ":" + f.getSourceLocation().getColumnNumber());
             flowGraph.addFunction(f);
         }
         flowGraph.getFunctions().forEach(f -> setEntryBlocks(f, functionAndBlocksManager));
@@ -350,17 +382,22 @@ public class FlowGraphBuilder {
         });
         int nodeCount = origNodeCount;
         int blockCount = origBlockCount;
+        int functionCount = origFunctionCount;
         for (Function function : sortedFunctions) {
+            if (function.getIndex() == -1) {
+                function.setIndex(firstFunctionId + functionCount++);
+            }
+
             List<BasicBlock> blocks = newList(function.getBlocks());
             blocks.sort(Comparator.comparingInt(BasicBlock::getTopologicalOrder));
 
             for (BasicBlock block : blocks) {
                 if (block.getIndex() == -1) {
-                    block.setIndex(blockCount++);
+                    block.setIndex(firstBlockId + blockCount++);
                 }
                 for (AbstractNode n : block.getNodes())
                     if (n.getIndex() == -1) {
-                        n.setIndex(nodeCount++);
+                        n.setIndex(firstNodeId + nodeCount++);
                     }
             }
         }
@@ -580,10 +617,10 @@ public class FlowGraphBuilder {
         }
         // make loader
         AstEnv mainEnv = this.initialEnv;
-        SourceLocation loaderDummySourceLocation = new SyntheticLocationMaker("host-environment-sources-loader").makeUnspecifiedPosition();
 
         BasicBlock appendBlock = mainEnv.getFunction().getEntry().getSingleSuccessor();
         for (URL source : sources) {
+            SourceLocation loaderDummySourceLocation = new SyntheticLoaderLocationMaker(source).makeUnspecifiedPosition();
             appendBlock = makeSuccessorBasicBlock(appendBlock, functionAndBlocksManager);
             int sourceRegister = mainEnv.getRegisterManager().nextRegister();
             int internalRegister = mainEnv.getRegisterManager().nextRegister();
@@ -638,6 +675,16 @@ public class FlowGraphBuilder {
         FunctionAndBlockManager fab = new FunctionAndBlockManager();
         env = setupFunction(main, env, fab);
         return new FlowGraphBuilder(env, fab);
+    }
+
+
+
+    public static FlowGraphBuilder makeForMainWithFirstFunctionId(SourceLocationMaker sourceLocationMaker, int firstFunctionId, int firstBlockId, int firstNodeId) {
+        AstEnv env = AstEnv.makeInitial();
+        Function main = new Function(null, null, null, sourceLocationMaker.makeUnspecifiedPosition());
+        FunctionAndBlockManager fab = new FunctionAndBlockManager();
+        env = setupFunction(main, env, fab);
+        return new FlowGraphBuilder(env, fab, firstFunctionId, firstBlockId, firstNodeId);
     }
 
     private SyntacticAnalysis makeSyntacticAnalysis() {

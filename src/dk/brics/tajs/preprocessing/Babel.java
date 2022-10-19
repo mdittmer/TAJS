@@ -45,7 +45,8 @@ public class Babel {
 
     private static final String babelPlugins =
             Stream.of("arrow-functions", "block-scoping", "classes", "shorthand-properties", "for-of",
-                      "template-literals", "parameters", "spread", "destructuring", "computed-properties")
+                      "template-literals", "parameters", "spread", "destructuring", "computed-properties",
+                      "modules-commonjs")
             .map(name -> "@babel/plugin-transform-" + name).collect(java.util.stream.Collectors.joining(","));
 
     private static final Pattern successPattern = Pattern.compile("Successfully compiled (\\d+) files? with Babel\\.");
@@ -69,7 +70,10 @@ public class Babel {
      * @param files A set of files to be processed by babel. Other files found in the directory
      *              specified by *commonAncestor* will be copied as-is.
      */
-    public static void translate(Path commonAncestor, Set<Path> files) {
+    public static Path translate(Path commonAncestor, Set<Path> files) {
+        log.info("BABEL FILE PATHS: " + files);
+
+
         List<Path> args = Options.get().getArguments();
         Path testFile = Lists.getLast(args);
         Path realCommonAncestor = PathAndURLUtils.toRealPath(commonAncestor);
@@ -97,6 +101,7 @@ public class Babel {
 
         List<String> baseCmd = Arrays.asList(
                 babelPath.toString(),
+                "--source-type", "unambiguous",
                 "--root-mode", "upward",            // Find the nearest babel.config.js in the file-system
                 "--extensions", String.join(",", fileExtensions),
                 "--keep-file-extension",
@@ -122,6 +127,7 @@ public class Babel {
                 cmd.add(commonAncestor.toString()); // Input directory
 
                 // Run the babel command
+                log.info("(cd " + babelPath.getParent().toFile() + "; " + String.join(" ", cmd) + ")");
                 Process process = new ProcessBuilder(cmd).directory(babelPath.getParent().toFile()).start();
                 String output, err;
 
@@ -152,21 +158,56 @@ public class Babel {
 
             throw new AnalysisException("Error occurred while running babel:\n" + e);
         }
+        Set<Path> babelFiles = relativeFiles.stream().map(babelRoot::resolve).collect(Collectors.toSet());
 
         // Override soundness tester options with new files
         if (Options.get().getSoundnessTesterOptions().isGenerateOnlyIncludeAutomaticallyForHTMLFiles()
             || Options.get().getSoundnessTesterOptions().isGenerateOnlyIncludeAutomatically()) {
 
-            Set<Path> babelFiles = relativeFiles.stream().map(babelRoot::resolve).collect(Collectors.toSet());
             Options.get().getSoundnessTesterOptions().setOnlyIncludesForInstrumentation(Optional.of(babelFiles));
             // rootDirFromMainFile can keep its value
         }
 
         // Fix the main file path
-        Path babelTestFile = PathAndURLUtils.getRelativeToTAJS(
-                babelRoot.resolve(realCommonAncestor.relativize(PathAndURLUtils.toRealPath(testFile)))
-        ).get();
+        for (Path babelFile : babelFiles) {
+            log.info("BABEL OUTPUT FILE " + babelFile);
+        }
+        for (int i = 0; i < args.size(); i++) {
+            Path file = args.get(i);
+            Path babelFile = babelRoot.resolve(realCommonAncestor.relativize(PathAndURLUtils.toRealPath(file)));
+            log.info("COMPUTED BABEL FILE " + babelFile);
+            if (babelFiles.contains(babelFile)) {
+                log.info("REPLACING " + file + " WITH " + babelFile);
+                args.set(i, PathAndURLUtils.getRelativeToTAJS(babelFile).get());
+            }
+        }
 
-        args.set(args.size() - 1, babelTestFile);
+        return babelRoot;
+        // for (Path file : files) {
+        //     Path babelFile = PathAndURLUtils.getRelativeToTAJS(
+        //             babelRoot.resolve(realCommonAncestor.relativize(PathAndURLUtils.toRealPath(file)))
+        //     ).get();
+        //     if (babelFiles.contains(babelFile)) {
+
+        //     }
+        //     List<Path> relativeFiles = files.stream()  // Babel does not handle json files so let us filter those out
+        //         .filter(file -> !PathAndURLUtils.getFileExtension(file).equals(".json"))
+        //         .map(file -> realCommonAncestor.relativize(file.toAbsolutePath()))
+        //         .distinct().collect(Collectors.toList());
+        // }
+        // log.info("babelRoot " + babelRoot);
+        // log.info("realCommonAncestor " + realCommonAncestor);
+        // log.info("testFile " + testFile);
+        // log.info("PathAndURLUtils.toRealPath(testFile) " + PathAndURLUtils.toRealPath(testFile));
+        // log.info("realCommonAncestor.relativize(PathAndURLUtils.toRealPath(testFile))" + realCommonAncestor.relativize(PathAndURLUtils.toRealPath(testFile)));
+        // log.info("babelRoot.resolve(realCommonAncestor.relativize(PathAndURLUtils.toRealPath(testFile)))" + babelRoot.resolve(realCommonAncestor.relativize(PathAndURLUtils.toRealPath(testFile))));
+        // log.info("PathAndURLUtils.getRelativeToTAJS(babelRoot.resolve(realCommonAncestor.relativize(PathAndURLUtils.toRealPath(testFile)))).get()" + PathAndURLUtils.getRelativeToTAJS(
+        //     babelRoot.resolve(realCommonAncestor.relativize(PathAndURLUtils.toRealPath(testFile)))
+        // ).get());
+        // Path babelTestFile = PathAndURLUtils.getRelativeToTAJS(
+        //         babelRoot.resolve(realCommonAncestor.relativize(PathAndURLUtils.toRealPath(testFile)))
+        // ).get();
+
+        // args.set(args.size() - 1, babelTestFile);
     }
 }

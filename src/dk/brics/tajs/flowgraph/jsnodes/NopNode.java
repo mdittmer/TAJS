@@ -40,6 +40,10 @@ public class NopNode extends Node {
         this.text = text;
     }
 
+    public String getText() {
+        return text;
+    }
+
     @Override
     public String toString() {
         if (text != null) {
